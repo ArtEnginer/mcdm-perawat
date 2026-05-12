@@ -27,11 +27,197 @@ $perawat = [
     ['no' => 10, 'nama' => 'Joko Purnomo',    'c' => [5, 4, 5, 4, 5, 4, 5], 'klaster' => 'K3', 'wp' => 4.644056, 'rankWP' => 9,  'ci' => 0.171882, 'rankT' => 9],
 ];
 
-$centroid = [
-    'K1' => [8.5, 8.3, 8.5, 8.5, 8.7, 8.3, 8.3],
-    'K2' => [6.5, 6.5, 6.7, 6.7, 6.7, 6.5, 6.7],
-    'K3' => [4.7, 5.0, 4.7, 5.0, 4.7, 5.0, 4.7],
+
+// ============================================================
+// LANGKAH 2 — K-MEANS ITERATIF (Tidak Hardcode)
+// ============================================================
+
+/**
+ * Hitung jarak Euclidean kuadrat antara satu data point dan satu centroid.
+ */
+function euclideanSq(array $point, array $cen): float
+{
+    $sum = 0.0;
+    foreach ($point as $j => $v) $sum += ($v - $cen[$j]) ** 2;
+    return $sum;
+}
+
+/**
+ * Jalankan K-Means iteratif hingga konvergen.
+ * Mengembalikan: centroids, labels (numerik), history tiap iterasi, jumlah iterasi.
+ */
+function runKMeans(array $data, int $k, array $initCentroids, int $maxIter = 100): array
+{
+    $n         = count($data);
+    $centroids = $initCentroids;
+    $labels    = array_fill(0, $n, -1);
+    $history   = [];
+
+    for ($iter = 1; $iter <= $maxIter; $iter++) {
+        $iterDistances = [];
+        $iterAssignments = [];
+
+        // === Langkah E: Assign tiap titik ke centroid terdekat ===
+        $newLabels = [];
+        foreach ($data as $i => $point) {
+            $minDist  = PHP_FLOAT_MAX;
+            $minClust = 0;
+            $pointDistances = [];
+            foreach ($centroids as $ki => $cen) {
+                $d = euclideanSq($point, $cen);
+                $pointDistances[$ki] = [
+                    'd2' => $d,
+                    'd' => sqrt($d),
+                ];
+                if ($d < $minDist) {
+                    $minDist = $d;
+                    $minClust = $ki;
+                }
+            }
+            $newLabels[$i] = $minClust;
+            $iterDistances[$i] = $pointDistances;
+            $iterAssignments[$i] = $minClust;
+        }
+
+        // === Langkah M: Hitung ulang centroid dari rata-rata anggota ===
+        $sums   = array_fill(0, $k, array_fill(0, count($data[0]), 0.0));
+        $counts = array_fill(0, $k, 0);
+        foreach ($newLabels as $i => $ki) {
+            $counts[$ki]++;
+            foreach ($data[$i] as $j => $v) $sums[$ki][$j] += $v;
+        }
+        $newCentroids = [];
+        $centroidMoves = [];
+        for ($ki = 0; $ki < $k; $ki++) {
+            $newCentroids[$ki] = $counts[$ki] > 0
+                ? array_map(fn($s) => $s / $counts[$ki], $sums[$ki])
+                : $centroids[$ki];
+            $centroidMoves[$ki] = sqrt(euclideanSq($centroids[$ki], $newCentroids[$ki]));
+        }
+
+        // Simpan log iterasi ini
+        $centLog = [];
+        foreach ($newCentroids as $ki => $cen) {
+            $centLog['K' . ($ki + 1)] = array_map(fn($v) => round($v, 4), $cen);
+        }
+        $history[] = [
+            'iter'      => $iter,
+            'centroids' => $centLog,
+            'labels'    => $newLabels,
+            'distances' => $iterDistances,
+            'assignments' => $iterAssignments,
+            'sums'      => $sums,
+            'counts'    => $counts,
+            'oldCentroids' => $centroids,
+            'newCentroids' => $newCentroids,
+            'centroidMoves' => $centroidMoves,
+            'changed'   => ($newLabels !== $labels),
+        ];
+
+        // Konvergensi: label tidak berubah
+        if ($newLabels === $labels) break;
+
+        $labels    = $newLabels;
+        $centroids = $newCentroids;
+    }
+
+    return [
+        'centroids'  => $centroids,
+        'labels'     => $labels,
+        'history'    => $history,
+        'iterations' => count($history),
+    ];
+}
+
+// ---- Siapkan data mentah dari $perawat ----
+$rawData = [];
+foreach ($perawat as $p) $rawData[] = $p['c'];
+
+// ---- Centroid Awal (Iterasi 0): pilih representatif high/mid/low berbasis domain ----
+$initCentroids = [
+    0 => $rawData[2],  // Citra Dewi      — calon K1 (nilai tinggi)
+    1 => $rawData[7],  // Hana Putri      — calon K2 (nilai sedang)
+    2 => $rawData[5],  // Fitri Handayani — calon K3 (nilai rendah)
 ];
+
+// ---- Jalankan K-Means iteratif ----
+$kmResult  = runKMeans($rawData, 3, $initCentroids, 100);
+$kmHistory = $kmResult['history'];
+$kmIter    = $kmResult['iterations'];
+$kmLabels  = $kmResult['labels'];        // index numerik 0/1/2 per perawat
+
+// ---- Mapping: urutkan centroid berdasarkan rata-rata (tinggi→K1, sedang→K2, rendah→K3) ----
+$finalCentroids = $kmResult['centroids'];
+$centMeans = [];
+foreach ($finalCentroids as $ki => $cen) $centMeans[$ki] = array_sum($cen) / count($cen);
+arsort($centMeans);   // index dengan rata-rata tertinggi lebih dahulu
+$labelMap = [];
+foreach (array_keys($centMeans) as $rank => $ki) $labelMap[$ki] = 'K' . ($rank + 1);
+
+// ---- Terapkan klaster hasil iterasi ke setiap perawat ----
+foreach ($perawat as $i => &$p) $p['klaster'] = $labelMap[$kmLabels[$i]];
+unset($p);
+
+// ---- Susun $centroid dalam urutan K1/K2/K3 ----
+$centroid = [];
+foreach ($labelMap as $ki => $kName) {
+    $centroid[$kName] = array_map(fn($v) => round($v, 4), $finalCentroids[$ki]);
+}
+ksort($centroid);
+
+// ---- Hitung $euclidData secara dinamis dari centroid hasil iterasi ----
+$klNames  = ['K1', 'K2', 'K3'];
+$klLabels = ['K1' => 'TINGGI', 'K2' => 'SEDANG', 'K3' => 'RENDAH'];
+$euclidData = [];
+foreach ($perawat as $p) {
+    $d2 = [];
+    $d = [];
+    $bestKl = '';
+    $bestDist = PHP_FLOAT_MAX;
+    foreach ($klNames as $kn) {
+        $sq   = euclideanSq($p['c'], $centroid[$kn]);
+        $dist = sqrt($sq);
+        $d2[] = round($sq, 4);
+        $d[]  = round($dist, 4);
+        if ($dist < $bestDist) {
+            $bestDist = $dist;
+            $bestKl = $kn;
+        }
+    }
+    $euclidData[] = ['d2' => $d2, 'd' => $d, 'kl' => $bestKl, 'label' => $klLabels[$bestKl]];
+}
+
+// ---- Hitung Silhouette Score dari hasil klasterisasi ----
+function silhouetteScore(array $data, array $labels): float
+{
+    $n = count($data);
+    if ($n < 2) return 0.0;
+    $scores = [];
+    foreach ($data as $i => $point) {
+        $myK = $labels[$i];
+        $sameD = [];
+        foreach ($data as $j => $q) {
+            if ($j !== $i && $labels[$j] === $myK) $sameD[] = sqrt(euclideanSq($point, $q));
+        }
+        $a = count($sameD) > 0 ? array_sum($sameD) / count($sameD) : 0.0;
+        $otherKs = array_unique($labels);
+        $bVals = [];
+        foreach ($otherKs as $ok) {
+            if ($ok === $myK) continue;
+            $od = [];
+            foreach ($data as $j => $q) {
+                if ($labels[$j] === $ok) $od[] = sqrt(euclideanSq($point, $q));
+            }
+            if (count($od) > 0) $bVals[] = array_sum($od) / count($od);
+        }
+        $b  = count($bVals) > 0 ? min($bVals) : 0.0;
+        $mx = max($a, $b);
+        $scores[] = $mx > 0 ? ($b - $a) / $mx : 0.0;
+    }
+    return round(array_sum($scores) / count($scores), 4);
+}
+$silhouette = silhouetteScore($rawData, $kmLabels);
+
 
 $weights = [0.418116, 0.229216, 0.112646, 0.050868, 0.112646, 0.050868, 0.02564];
 
@@ -55,18 +241,7 @@ $normMatrix = [
     [0.052161, 0.027422, 0.018405, 0.016393, 0.018405, 0.016393, 0.030303],
 ];
 
-$euclidData = [
-    ['d2' => [1.51, 13.51, 70.56],    'd' => [1.229, 3.676, 8.400],  'kl' => 'K1', 'label' => 'TINGGI'],
-    ['d2' => [83.11, 18.31, 0.36],    'd' => [9.116, 4.279, 0.600],  'kl' => 'K3', 'label' => 'RENDAH'],
-    ['d2' => [2.31, 39.91, 121.96],   'd' => [1.520, 6.317, 11.044], 'kl' => 'K1', 'label' => 'TINGGI'],
-    ['d2' => [41.91, 2.71, 9.76],     'd' => [6.474, 1.646, 3.124],  'kl' => 'K2', 'label' => 'SEDANG'],
-    ['d2' => [14.71, 1.11, 33.16],    'd' => [3.835, 1.054, 5.758],  'kl' => 'K2', 'label' => 'SEDANG'],
-    ['d2' => [138.31, 47.91, 4.96],   'd' => [11.761, 6.922, 2.227], 'kl' => 'K3', 'label' => 'RENDAH'],
-    ['d2' => [2.31, 39.91, 121.96],   'd' => [1.520, 6.317, 11.044], 'kl' => 'K1', 'label' => 'TINGGI'],
-    ['d2' => [22.51, 6.51, 22.96],    'd' => [4.744, 2.552, 4.792],  'kl' => 'K2', 'label' => 'SEDANG'],
-    ['d2' => [6.31, 27.11, 88.16],    'd' => [2.512, 5.207, 9.389],  'kl' => 'K1', 'label' => 'TINGGI'],
-    ['d2' => [74.11, 28.91, 0.96],    'd' => [8.609, 5.377, 0.980],  'kl' => 'K3', 'label' => 'RENDAH'],
-];
+// \$euclidData dihitung secara dinamis oleh runKMeans() di atas
 
 $topsisData = [
     ['dPos' => 0.028904, 'dNeg' => 0.091015],
@@ -933,6 +1108,24 @@ $topsisDataJson   = json_encode($topsisData);
             gap: 20px;
         }
 
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        @media (max-width: 1024px) {
+            .grid-3 {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 640px) {
+            .grid-3 {
+                grid-template-columns: 1fr;
+            }
+        }
+
         .formula-box {
             background: #0d1117;
             border-radius: 8px;
@@ -958,6 +1151,24 @@ $topsisDataJson   = json_encode($topsisData);
 
         .formula-box .comment {
             color: #8b949e;
+        }
+
+        details {
+            transition: all 0.2s;
+        }
+
+        details summary {
+            user-select: none;
+            transition: background 0.2s;
+        }
+
+        details summary:hover {
+            background: var(--surface) !important;
+        }
+
+        details[open]>summary span:last-child {
+            transform: rotate(180deg);
+            transition: transform 0.2s;
         }
 
         .form-group {
@@ -1473,7 +1684,7 @@ $topsisDataJson   = json_encode($topsisData);
 
             <div class="grid-2">
                 <div class="card">
-                    <div class="card-title"><span class="dot dot-green"></span>Centroid K-Means (Iterasi Final)</div>
+                    <div class="card-title"><span class="dot dot-green"></span>Centroid K-Means — Hasil Iterasi (<?= $kmIter ?> iterasi)</div>
                     <div class="centroid-row">
                         <div class="centroid-card cent-k1">
                             <h4 style="color:#0e6655;">K1 — Kinerja TINGGI</h4>
@@ -1537,6 +1748,381 @@ $topsisDataJson   = json_encode($topsisData);
                     <span class="comment">// Formula Jarak Euclidean</span><br>
                     d(x, c) = <span class="fn">√</span>( <span class="fn">Σ</span>(Xij − Ckj)² )<br>
                     <span class="comment">// Penugasan: min(d→K1, d→K2, d→K3)</span>
+                </div>
+            </div>
+
+            <!-- ============ LOG ITERASI K-MEANS ============ -->
+            <div class="card">
+                <div class="card-title"><span class="dot dot-blue"></span>Log Iterasi K-Means — Ringkasan Centroid (Proses Konvergensi)</div>
+                <p style="font-size:12px;color:var(--text3);margin-bottom:12px;">
+                    Algoritma berjalan <strong><?= $kmIter ?> iterasi</strong> hingga penugasan klaster tidak berubah (konvergen).
+                    Centroid dihitung ulang setiap iterasi dari rata-rata anggota klaster.
+                </p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Iterasi</th>
+                                <th>K1 Centroid (C1–C7)</th>
+                                <th>K2 Centroid (C1–C7)</th>
+                                <th>K3 Centroid (C1–C7)</th>
+                                <th>Label Berubah?</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php
+                            // Tampilkan centroid awal (Iterasi 0)
+                            $krShort = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+                            function centStr(array $cen, array $krShort): string
+                            {
+                                $parts = [];
+                                foreach ($cen as $j => $v) $parts[] = $krShort[$j] . ':' . number_format($v, 2);
+                                return implode(' ', $parts);
+                            }
+                            ?>
+                            <tr style="background:var(--primary-pale);">
+                                <td><strong>0 (Awal)</strong></td>
+                                <?php
+                                $ic = [
+                                    $initCentroids[0],
+                                    $initCentroids[1],
+                                    $initCentroids[2],
+                                ];
+                                // Map initial centroids to K1/K2/K3 by mean
+                                $icMeans = array_map(fn($c) => array_sum($c) / count($c), $ic);
+                                arsort($icMeans);
+                                $icSorted = [];
+                                foreach (array_keys($icMeans) as $ki) $icSorted[] = $ic[$ki];
+                                foreach ($icSorted as $cen): ?>
+                                    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;"><?= centStr($cen, $krShort) ?></td>
+                                <?php endforeach; ?>
+                                <td>—</td>
+                            </tr>
+                            <?php foreach ($kmHistory as $h): ?>
+                                <tr>
+                                    <td><strong><?= $h['iter'] ?></strong></td>
+                                    <?php
+                                    // centroid sudah disimpan dalam log
+                                    $centLog = $h['centroids'];
+                                    // urutkan berdasarkan rata-rata
+                                    $cMeans = [];
+                                    foreach ($centLog as $ki => $cen) $cMeans[$ki] = array_sum($cen) / count($cen);
+                                    arsort($cMeans);
+                                    foreach (array_keys($cMeans) as $ki):
+                                        $cen = $centLog[$ki];
+                                    ?>
+                                        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;"><?= centStr($cen, $krShort) ?></td>
+                                    <?php endforeach; ?>
+                                    <td style="text-align:center;">
+                                        <?php if ($h['changed']): ?>
+                                            <span style="color:var(--warn);font-weight:600;">✔ Ya</span>
+                                        <?php else: ?>
+                                            <span style="color:var(--accent);font-weight:600;">✔ Konvergen</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="formula-box" style="margin-top:16px;">
+                    <span class="comment">// Langkah E (Expectation): Assign xi → arg min_k d(xi, ck)</span><br>
+                    <span class="comment">// Langkah M (Maximization): ck = (1/|Ck|) Σ xi , xi ∈ Ck</span><br>
+                    <span class="comment">// Konvergen bila: label[t] === label[t-1] untuk semua i</span><br>
+                    Silhouette Score = <?= $silhouette ?> &nbsp;→&nbsp;
+                    <span style="color:var(--accent);">
+                        <?= $silhouette >= 0.5 ? '✔ VALID (≥ 0.5)' : '⚠ Perlu ditinjau (< 0.5)' ?>
+                    </span>
+                </div>
+            </div>
+
+            <!-- ============ DETAIL PENUGASAN KLASTER PER ITERASI ============ -->
+            <div class="card">
+                <div class="card-title"><span class="dot dot-green"></span>Detail Penugasan Klaster — Setiap Iterasi</div>
+                <p style="font-size:12px;color:var(--text3);margin-bottom:16px;">
+                    Tabel berikut menunjukkan penugasan setiap perawat ke klaster di setiap tahap iterasi,
+                    beserta jumlah anggota per klaster dan centroid yang digunakan untuk iterasi berikutnya.
+                </p>
+
+                <?php
+                // Persiapan: Hitung penugasan iterasi 0 (Awal)
+                $assignmentHistory = [];
+
+                // Iterasi 0: Assign dengan centroid awal
+                $ic = [
+                    $initCentroids[0],
+                    $initCentroids[1],
+                    $initCentroids[2],
+                ];
+                $icMeans = array_map(fn($c) => array_sum($c) / count($c), $ic);
+                arsort($icMeans);
+                $icMap = [];
+                $icRank = 0;
+                foreach (array_keys($icMeans) as $ki) {
+                    $icMap[$ki] = 'K' . (++$icRank);
+                }
+                $labels0 = [];
+                foreach ($rawData as $i => $point) {
+                    $minDist = PHP_FLOAT_MAX;
+                    $minClust = 0;
+                    foreach ($ic as $ki => $cen) {
+                        $d = euclideanSq($point, $cen);
+                        if ($d < $minDist) {
+                            $minDist = $d;
+                            $minClust = $ki;
+                        }
+                    }
+                    $labels0[$i] = $icMap[$minClust];
+                }
+
+                $counts0 = ['K1' => 0, 'K2' => 0, 'K3' => 0];
+                $members0 = ['K1' => [], 'K2' => [], 'K3' => []];
+                $distances0 = [];
+                foreach ($rawData as $i => $point) {
+                    $row = [];
+                    foreach ($ic as $ki => $cen) {
+                        $d2 = euclideanSq($point, $cen);
+                        $row[$icMap[$ki]] = ['d2' => $d2, 'd' => sqrt($d2)];
+                    }
+                    $distances0[$i] = $row;
+                }
+                foreach ($labels0 as $i => $k) {
+                    $counts0[$k]++;
+                    $members0[$k][] = $perawat[$i]['nama'];
+                }
+
+                $assignmentHistory[0] = [
+                    'labels' => $labels0,
+                    'counts' => $counts0,
+                    'members' => $members0,
+                    'distances' => $distances0,
+                    'centroids' => [
+                        'K1' => $icSorted[0],
+                        'K2' => $icSorted[1],
+                        'K3' => $icSorted[2],
+                    ],
+                    'oldCentroids' => [
+                        'K1' => $icSorted[0],
+                        'K2' => $icSorted[1],
+                        'K3' => $icSorted[2],
+                    ],
+                    'newCentroids' => [
+                        'K1' => $icSorted[0],
+                        'K2' => $icSorted[1],
+                        'K3' => $icSorted[2],
+                    ],
+                    'centroidMoves' => [
+                        'K1' => 0.0,
+                        'K2' => 0.0,
+                        'K3' => 0.0,
+                    ],
+                ];
+
+                // Iterasi 1 - N: Gunakan data dari history
+                foreach ($kmHistory as $h) {
+                    $iter = $h['iter'];
+                    $labelsH = $h['labels'];
+
+                    // Map label numerik ke K1/K2/K3
+                    $centLog = $h['centroids'];
+                    $cMeans = [];
+                    foreach ($centLog as $ki => $cen) $cMeans[$ki] = array_sum($cen) / count($cen);
+                    arsort($cMeans);
+                    $labelMapH = [];
+                    $rankH = 0;
+                    foreach (array_keys($cMeans) as $ki) {
+                        $labelMapH[$rankH] = 'K' . (++$rankH);
+                    }
+
+                    $labelsStr = [];
+                    foreach ($labelsH as $i => $ki) {
+                        $labelsStr[$i] = $labelMapH[$ki] ?? ('K' . ($ki + 1));
+                    }
+
+                    $countsH = ['K1' => 0, 'K2' => 0, 'K3' => 0];
+                    $membersH = ['K1' => [], 'K2' => [], 'K3' => []];
+                    foreach ($labelsStr as $i => $k) {
+                        $countsH[$k]++;
+                        $membersH[$k][] = $perawat[$i]['nama'];
+                    }
+
+                    $orderedDistances = [];
+                    foreach ($labelsH as $i => $ki) {
+                        $orderedDistances[$i] = [];
+                        foreach (array_keys($cMeans) as $rank => $idx) {
+                            $kName = 'K' . ($rank + 1);
+                            $orderedDistances[$i][$kName] = $h['distances'][$i][$idx] ?? ['d2' => 0.0, 'd' => 0.0];
+                        }
+                    }
+
+                    $orderedCentroids = [];
+                    $orderedOldCentroids = [];
+                    $orderedNewCentroids = [];
+                    $orderedMoves = [];
+                    $orderedSums = [];
+                    $orderedCounts = [];
+                    foreach (array_keys($cMeans) as $rank => $idx) {
+                        $kName = 'K' . ($rank + 1);
+                        $sourceIdx = (int) substr($idx, 1) - 1;
+                        $orderedCentroids[$kName] = $centLog[$idx];
+                        $orderedOldCentroids[$kName] = $h['oldCentroids'][$sourceIdx] ?? [];
+                        $orderedNewCentroids[$kName] = $h['newCentroids'][$sourceIdx] ?? [];
+                        $orderedMoves[$kName] = $h['centroidMoves'][$sourceIdx] ?? 0.0;
+                        $orderedSums[$kName] = $h['sums'][$sourceIdx] ?? [];
+                        $orderedCounts[$kName] = $h['counts'][$sourceIdx] ?? 0;
+                    }
+
+                    $assignmentHistory[$iter] = [
+                        'labels' => $labelsStr,
+                        'counts' => $countsH,
+                        'members' => $membersH,
+                        'distances' => $orderedDistances,
+                        'centroids' => $orderedCentroids,
+                        'oldCentroids' => $orderedOldCentroids,
+                        'newCentroids' => $orderedNewCentroids,
+                        'centroidMoves' => $orderedMoves,
+                        'sums' => $orderedSums,
+                        'rawCounts' => $orderedCounts,
+                    ];
+                }
+                ?>
+
+                <!-- Accordion atau Tab untuk setiap iterasi -->
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <?php foreach ($assignmentHistory as $iterNum => $assign): ?>
+                        <details style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+                            <summary style="padding: 12px 16px; background: <?= $iterNum === 0 ? 'var(--primary-pale)' : 'var(--surface)' ?>; cursor: pointer; font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
+                                <span>
+                                    Iterasi <?= $iterNum === 0 ? '<strong style="color:var(--primary);">0 (AWAL)</strong>' : '<strong style="color:var(--warn);">' . $iterNum . '</strong>' ?>
+                                    — K1: <?= $assign['counts']['K1'] ?> | K2: <?= $assign['counts']['K2'] ?> | K3: <?= $assign['counts']['K3'] ?>
+                                </span>
+                                <span style="font-size: 12px; color: var(--text3);">▼</span>
+                            </summary>
+                            <div style="padding: 16px; background: white; border-top: 1px solid var(--border);">
+                                <div class="grid-3" style="margin-bottom: 16px;">
+                                    <div style="padding: 12px; background: var(--accent-pale); border-radius: 8px; border-left: 4px solid var(--accent);">
+                                        <div style="font-weight: 600; color: var(--accent); font-size: 12px;">K1 — TINGGI</div>
+                                        <div style="font-size: 14px; font-weight: 700; color: var(--accent); margin-top: 4px;"><?= $assign['counts']['K1'] ?> Perawat</div>
+                                        <div style="font-size: 11px; color: var(--text3); margin-top: 6px;">
+                                            <?php if (count($assign['members']['K1']) > 0): ?>
+                                                <?= implode(', ', $assign['members']['K1']) ?>
+                                            <?php else: ?>
+                                                <em>(kosong)</em>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <div style="padding: 12px; background: var(--primary-pale); border-radius: 8px; border-left: 4px solid var(--primary);">
+                                        <div style="font-weight: 600; color: var(--primary); font-size: 12px;">K2 — SEDANG</div>
+                                        <div style="font-size: 14px; font-weight: 700; color: var(--primary); margin-top: 4px;"><?= $assign['counts']['K2'] ?> Perawat</div>
+                                        <div style="font-size: 11px; color: var(--text3); margin-top: 6px;">
+                                            <?php if (count($assign['members']['K2']) > 0): ?>
+                                                <?= implode(', ', $assign['members']['K2']) ?>
+                                            <?php else: ?>
+                                                <em>(kosong)</em>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <div style="padding: 12px; background: var(--danger-pale); border-radius: 8px; border-left: 4px solid var(--danger);">
+                                        <div style="font-weight: 600; color: var(--danger); font-size: 12px;">K3 — RENDAH</div>
+                                        <div style="font-size: 14px; font-weight: 700; color: var(--danger); margin-top: 4px;"><?= $assign['counts']['K3'] ?> Perawat</div>
+                                        <div style="font-size: 11px; color: var(--text3); margin-top: 6px;">
+                                            <?php if (count($assign['members']['K3']) > 0): ?>
+                                                <?= implode(', ', $assign['members']['K3']) ?>
+                                            <?php else: ?>
+                                                <em>(kosong)</em>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style="margin-top: 16px;">
+                                    <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: var(--text);">Perhitungan Euclidean Distance</div>
+                                    <div class="table-wrap">
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    <th>No</th>
+                                                    <th>Nama</th>
+                                                    <th>D² → K1</th>
+                                                    <th>D² → K2</th>
+                                                    <th>D² → K3</th>
+                                                    <th>D → K1</th>
+                                                    <th>D → K2</th>
+                                                    <th>D → K3</th>
+                                                    <th>Hasil</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach ($perawat as $i => $p): ?>
+                                                    <?php $distRow = $assign['distances'][$i] ?? []; ?>
+                                                    <tr>
+                                                        <td><?= $p['no'] ?></td>
+                                                        <td><b><?= $p['nama'] ?></b></td>
+                                                        <td><?= number_format($distRow['K1']['d2'] ?? 0, 4) ?></td>
+                                                        <td><?= number_format($distRow['K2']['d2'] ?? 0, 4) ?></td>
+                                                        <td><?= number_format($distRow['K3']['d2'] ?? 0, 4) ?></td>
+                                                        <td><?= number_format($distRow['K1']['d'] ?? 0, 4) ?></td>
+                                                        <td><?= number_format($distRow['K2']['d'] ?? 0, 4) ?></td>
+                                                        <td><?= number_format($distRow['K3']['d'] ?? 0, 4) ?></td>
+                                                        <td><span class="klaster-badge <?= klasterClass($assign['labels'][$i]) ?>"><?= $assign['labels'][$i] ?></span></td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <div style="margin-top: 16px;">
+                                    <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: var(--text);">Pembaruan Centroid</div>
+                                    <div class="table-wrap">
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    <th>Klaster</th>
+                                                    <th>Jumlah Anggota</th>
+                                                    <th>Centroid Lama</th>
+                                                    <th>Σ Nilai Anggota</th>
+                                                    <th>Centroid Baru</th>
+                                                    <th>Perpindahan</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach (['K1', 'K2', 'K3'] as $kName): ?>
+                                                    <tr>
+                                                        <td><b><?= $kName ?></b></td>
+                                                        <td style="text-align:center;"><?= $assign['rawCounts'][$kName] ?? $assign['counts'][$kName] ?? 0 ?></td>
+                                                        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;"><?= centStr($assign['oldCentroids'][$kName] ?? [], $krShort) ?></td>
+                                                        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">
+                                                            <?php
+                                                            $sumVals = $assign['sums'][$kName] ?? [];
+                                                            $sumParts = [];
+                                                            foreach ($sumVals as $j => $v) $sumParts[] = $krShort[$j] . ':' . number_format($v, 2);
+                                                            echo implode(' ', $sumParts);
+                                                            ?>
+                                                        </td>
+                                                        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;<?= $kName === 'K1' ? 'color:#0e6655;' : ($kName === 'K2' ? 'color:#1a5276;' : 'color:#922b21;') ?>"><?= centStr($assign['newCentroids'][$kName] ?? [], $krShort) ?></td>
+                                                        <td><?= number_format($assign['centroidMoves'][$kName] ?? 0, 4) ?></td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <div style="font-size: 11px; color: var(--text3); padding-top: 8px; border-top: 1px solid var(--border);">
+                                    <strong>Rincian penugasan:</strong>
+                                    <div style="margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; background: var(--surface); padding: 8px; border-radius: 6px; max-height: 120px; overflow-y: auto;">
+                                        <?php foreach ($perawat as $i => $p): ?>
+                                            <div style="padding: 2px 0;">
+                                                <span style="color: var(--text3);">No <?= $p['no'] ?></span>
+                                                <span style="font-weight: 600;"><?= $p['nama'] ?></span>
+                                                <span style="color: var(--accent);">→ <?= $assign['labels'][$i] ?></span>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+                    <?php endforeach; ?>
                 </div>
             </div>
 
